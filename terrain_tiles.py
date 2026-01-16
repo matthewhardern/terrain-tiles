@@ -119,6 +119,7 @@ class TileResult:
     filename: str
     size_mb: float
     max_z: float
+    volume_ml: float
 
 
 # =============================================================================
@@ -464,7 +465,7 @@ def generate_tile_mesh(
     tile_radius_km: float,
     base_height: float,
     exaggeration: float = 1.0
-) -> tuple[mesh.Mesh, float]:
+) -> tuple[mesh.Mesh, float, float]:
     """Generate a 3D mesh for a single terrain tile.
 
     Creates a watertight mesh with terrain on top, flat base on bottom,
@@ -478,7 +479,8 @@ def generate_tile_mesh(
         exaggeration: Vertical exaggeration factor (1.0 = true scale)
 
     Returns:
-        Tuple of (stl_mesh, max_z) where max_z is the maximum height in mm
+        Tuple of (stl_mesh, max_z, volume_ml) where max_z is max height in mm
+        and volume_ml is the resin volume in milliliters
     """
     height, width = elevation.shape
 
@@ -528,7 +530,15 @@ def generate_tile_mesh(
     stl_mesh = mesh.Mesh(np.zeros(len(all_triangles), dtype=mesh.Mesh.dtype))
     stl_mesh.vectors = all_triangles
 
-    return stl_mesh, max_z
+    # Calculate volume from elevation data (more reliable than mesh volume)
+    # Each grid cell contributes: cell_area × cell_height
+    cell_size = xy_scale  # Size of each cell in mm
+    cell_area = cell_size * cell_size  # mm²
+    # Sum all Z values and multiply by cell area
+    total_volume_mm3 = np.sum(terrain_z) * cell_area / 1  # Approximate integral
+    volume_ml = total_volume_mm3 / 1000  # Convert mm³ to ml
+
+    return stl_mesh, max_z, volume_ml
 
 
 def process_single_tile(args: TileProcessArgs) -> TileResult:
@@ -542,7 +552,7 @@ def process_single_tile(args: TileProcessArgs) -> TileResult:
     Returns:
         TileResult with filename, size, and max height
     """
-    stl_mesh, max_z = generate_tile_mesh(
+    stl_mesh, max_z, volume_ml = generate_tile_mesh(
         args.elevation,
         tile_size_mm=args.tile_size_mm,
         tile_radius_km=args.tile_radius_km,
@@ -568,7 +578,7 @@ def process_single_tile(args: TileProcessArgs) -> TileResult:
         stl_mesh.save(filepath)
 
     size_mb = os.path.getsize(filepath) / 1024 / 1024
-    return TileResult(filename=filename, size_mb=size_mb, max_z=max_z)
+    return TileResult(filename=filename, size_mb=size_mb, max_z=max_z, volume_ml=volume_ml)
 
 
 # =============================================================================
@@ -753,7 +763,7 @@ def generate_meshes(
     tile_radius: float,
     global_min: float,
     global_max: float
-) -> None:
+) -> float:
     """Generate and save mesh files for all tiles.
 
     Args:
@@ -764,6 +774,9 @@ def generate_meshes(
         tile_radius: Radius of each tile in km
         global_min: Minimum elevation across all tiles
         global_max: Maximum elevation across all tiles
+
+    Returns:
+        Total resin volume in ml for all tiles
     """
     # Prepare tile tasks for mesh generation
     tile_tasks = []
@@ -777,6 +790,8 @@ def generate_meshes(
 
     print(f"\nGenerating {len(tile_tasks)} tiles...")
 
+    total_volume_ml = 0.0
+
     if args.parallel > 0:
         # Parallel processing
         with ProcessPoolExecutor(max_workers=args.parallel) as executor:
@@ -786,23 +801,29 @@ def generate_meshes(
             }
             for future in as_completed(futures):
                 result = future.result()
-                print(f"  {result.filename}: {result.size_mb:.1f} MB, height: {result.max_z:.1f}mm")
+                total_volume_ml += result.volume_ml
+                print(f"  {result.filename}: {result.size_mb:.1f} MB, height: {result.max_z:.1f}mm, resin: {result.volume_ml:.1f}ml")
     else:
         # Sequential processing
         for task in tile_tasks:
             result = _process_tile_wrapper(task)
-            print(f"  {result.filename}: {result.size_mb:.1f} MB, height: {result.max_z:.1f}mm")
+            total_volume_ml += result.volume_ml
+            print(f"  {result.filename}: {result.size_mb:.1f} MB, height: {result.max_z:.1f}mm, resin: {result.volume_ml:.1f}ml")
+
+    return total_volume_ml
 
 
-def print_summary(tiles_x: int, tiles_y: int, output_dir: str) -> None:
+def print_summary(tiles_x: int, tiles_y: int, output_dir: str, total_volume_ml: float) -> None:
     """Print completion summary and tile layout.
 
     Args:
         tiles_x: Number of tiles in X direction
         tiles_y: Number of tiles in Y direction
         output_dir: Output directory path
+        total_volume_ml: Total resin volume in ml
     """
     print(f"\nDone! {tiles_x * tiles_y} tiles saved to {output_dir}")
+    print(f"Total resin: {total_volume_ml:.1f}ml")
     print(f"\nPrint layout (bottom-left origin):")
     for ty in range(tiles_y - 1, -1, -1):
         row = " ".join([f"[{tx},{ty}]" for tx in range(tiles_x)])
@@ -848,12 +869,12 @@ def main() -> None:
     print(f"Expected relief: {expected_relief:.1f}mm (+ {args.base}mm base)")
 
     # Generate meshes
-    generate_meshes(
+    total_volume_ml = generate_meshes(
         tile_elevations, args, tiles_x, tiles_y, tile_radius, global_min, global_max
     )
 
     # Print summary
-    print_summary(tiles_x, tiles_y, args.output)
+    print_summary(tiles_x, tiles_y, args.output, total_volume_ml)
 
 
 if __name__ == "__main__":

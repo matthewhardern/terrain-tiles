@@ -99,6 +99,19 @@ For 120mm tile covering 2km:
 - `--resolution 500` — faster test prints
 - `--resolution 1500` — maximum detail
 
+## Resin Usage
+
+The script calculates and displays resin volume for each tile and total:
+
+```
+  tile_0_0.stl: 1.9 MB, height: 22.0mm, resin: 328.1ml
+  tile_1_0.stl: 1.9 MB, height: 17.8mm, resin: 214.9ml
+  ...
+Total resin: 1268.1ml
+```
+
+Typical volumes for 180mm × 180mm tiles: 200-450ml depending on terrain relief.
+
 ## Data Source
 
 Environment Agency LIDAR Composite DSM (Digital Surface Model) at 1m resolution.
