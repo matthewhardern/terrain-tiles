@@ -111,6 +111,7 @@ class TileProcessArgs:
     exaggeration: float
     output_dir: str
     output_format: str
+    global_min_elev: float  # Global minimum elevation across all tiles
 
 
 @dataclass
@@ -360,6 +361,10 @@ def _generate_surface_triangles(
 ) -> np.ndarray:
     """Generate triangles for a horizontal surface (top terrain or bottom base).
 
+    Winding order: CCW when viewed from outside the mesh.
+    - Top surface: CCW when viewed from above (+Z)
+    - Bottom surface: CCW when viewed from below (-Z)
+
     Args:
         x_coords: Array of X coordinate values
         y_coords: Array of Y coordinate values
@@ -379,22 +384,34 @@ def _generate_surface_triangles(
     n_quads = (height - 1) * (width - 1)
     triangles = np.zeros((n_quads * 2, 3, 3), dtype=np.float32)
 
+    # Get coordinates for all four corners of each quad
+    x0, x1 = x_coords[x_idx], x_coords[x_idx + 1]
+    y0, y1 = y_coords[y_idx], y_coords[y_idx + 1]
+    z00 = z_values[y_idx, x_idx]          # bottom-left
+    z10 = z_values[y_idx, x_idx + 1]      # bottom-right
+    z01 = z_values[y_idx + 1, x_idx]      # top-left
+    z11 = z_values[y_idx + 1, x_idx + 1]  # top-right
+
     if is_bottom:
-        # Bottom surface - reversed winding for outward normals
-        triangles[0::2, 0] = np.column_stack([x_coords[x_idx], y_coords[y_idx], z_values[y_idx, x_idx]])
-        triangles[0::2, 1] = np.column_stack([x_coords[x_idx], y_coords[y_idx + 1], z_values[y_idx + 1, x_idx]])
-        triangles[0::2, 2] = np.column_stack([x_coords[x_idx + 1], y_coords[y_idx], z_values[y_idx, x_idx + 1]])
-        triangles[1::2, 0] = np.column_stack([x_coords[x_idx], y_coords[y_idx + 1], z_values[y_idx + 1, x_idx]])
-        triangles[1::2, 1] = np.column_stack([x_coords[x_idx + 1], y_coords[y_idx + 1], z_values[y_idx + 1, x_idx + 1]])
-        triangles[1::2, 2] = np.column_stack([x_coords[x_idx + 1], y_coords[y_idx], z_values[y_idx, x_idx + 1]])
+        # Bottom surface - CCW when viewed from below (-Z)
+        # Triangle 1: (x0,y0) -> (x0,y1) -> (x1,y0)
+        triangles[0::2, 0] = np.column_stack([x0, y0, z00])
+        triangles[0::2, 1] = np.column_stack([x0, y1, z01])
+        triangles[0::2, 2] = np.column_stack([x1, y0, z10])
+        # Triangle 2: (x1,y0) -> (x0,y1) -> (x1,y1)
+        triangles[1::2, 0] = np.column_stack([x1, y0, z10])
+        triangles[1::2, 1] = np.column_stack([x0, y1, z01])
+        triangles[1::2, 2] = np.column_stack([x1, y1, z11])
     else:
-        # Top surface - standard winding
-        triangles[0::2, 0] = np.column_stack([x_coords[x_idx], y_coords[y_idx], z_values[y_idx, x_idx]])
-        triangles[0::2, 1] = np.column_stack([x_coords[x_idx + 1], y_coords[y_idx], z_values[y_idx, x_idx + 1]])
-        triangles[0::2, 2] = np.column_stack([x_coords[x_idx], y_coords[y_idx + 1], z_values[y_idx + 1, x_idx]])
-        triangles[1::2, 0] = np.column_stack([x_coords[x_idx], y_coords[y_idx + 1], z_values[y_idx + 1, x_idx]])
-        triangles[1::2, 1] = np.column_stack([x_coords[x_idx + 1], y_coords[y_idx], z_values[y_idx, x_idx + 1]])
-        triangles[1::2, 2] = np.column_stack([x_coords[x_idx + 1], y_coords[y_idx + 1], z_values[y_idx + 1, x_idx + 1]])
+        # Top surface - CCW when viewed from above (+Z)
+        # Triangle 1: (x0,y0) -> (x1,y0) -> (x0,y1)
+        triangles[0::2, 0] = np.column_stack([x0, y0, z00])
+        triangles[0::2, 1] = np.column_stack([x1, y0, z10])
+        triangles[0::2, 2] = np.column_stack([x0, y1, z01])
+        # Triangle 2: (x0,y1) -> (x1,y0) -> (x1,y1)
+        triangles[1::2, 0] = np.column_stack([x0, y1, z01])
+        triangles[1::2, 1] = np.column_stack([x1, y0, z10])
+        triangles[1::2, 2] = np.column_stack([x1, y1, z11])
 
     return triangles
 
@@ -407,6 +424,9 @@ def _generate_wall_triangles(
 ) -> np.ndarray:
     """Generate triangles for a single wall of the mesh.
 
+    Winding order: CCW when viewed from outside the mesh.
+    Each wall has quads with bottom vertices (z=0) and top vertices (z=terrain).
+
     Args:
         axis_coords: Coordinate values along the wall
         perp_coord: Fixed coordinate value perpendicular to the wall
@@ -418,43 +438,57 @@ def _generate_wall_triangles(
     """
     n = len(axis_coords) - 1
     triangles = np.zeros((n * 2, 3, 3), dtype=np.float32)
-    idx = np.arange(n)
+    i = np.arange(n)
+
+    # Coordinates along the wall
+    a0, a1 = axis_coords[i], axis_coords[i + 1]
+    z0, z1 = terrain_edge[i], terrain_edge[i + 1]
+    zeros = np.zeros(n)
+    perp = np.full(n, perp_coord)
 
     if wall_type == 'south':
-        # South wall (y = 0, varying x)
-        triangles[0::2, 0] = np.column_stack([axis_coords[idx], np.zeros(n), np.zeros(n)])
-        triangles[0::2, 1] = np.column_stack([axis_coords[idx], np.zeros(n), terrain_edge[idx]])
-        triangles[0::2, 2] = np.column_stack([axis_coords[idx + 1], np.zeros(n), np.zeros(n)])
-        triangles[1::2, 0] = np.column_stack([axis_coords[idx + 1], np.zeros(n), np.zeros(n)])
-        triangles[1::2, 1] = np.column_stack([axis_coords[idx], np.zeros(n), terrain_edge[idx]])
-        triangles[1::2, 2] = np.column_stack([axis_coords[idx + 1], np.zeros(n), terrain_edge[idx + 1]])
+        # South wall (y=0), normal points -Y
+        # Looking from -Y: x increases left-to-right, z increases bottom-to-top
+        # CCW from outside: bottom-left -> top-left -> bottom-right
+        triangles[0::2, 0] = np.column_stack([a0, zeros, zeros])   # bottom-left
+        triangles[0::2, 1] = np.column_stack([a0, zeros, z0])      # top-left
+        triangles[0::2, 2] = np.column_stack([a1, zeros, zeros])   # bottom-right
+        triangles[1::2, 0] = np.column_stack([a1, zeros, zeros])   # bottom-right
+        triangles[1::2, 1] = np.column_stack([a0, zeros, z0])      # top-left
+        triangles[1::2, 2] = np.column_stack([a1, zeros, z1])      # top-right
 
     elif wall_type == 'north':
-        # North wall (y = perp_coord, varying x)
-        triangles[0::2, 0] = np.column_stack([axis_coords[idx], np.full(n, perp_coord), np.zeros(n)])
-        triangles[0::2, 1] = np.column_stack([axis_coords[idx + 1], np.full(n, perp_coord), np.zeros(n)])
-        triangles[0::2, 2] = np.column_stack([axis_coords[idx], np.full(n, perp_coord), terrain_edge[idx]])
-        triangles[1::2, 0] = np.column_stack([axis_coords[idx + 1], np.full(n, perp_coord), np.zeros(n)])
-        triangles[1::2, 1] = np.column_stack([axis_coords[idx + 1], np.full(n, perp_coord), terrain_edge[idx + 1]])
-        triangles[1::2, 2] = np.column_stack([axis_coords[idx], np.full(n, perp_coord), terrain_edge[idx]])
+        # North wall (y=perp), normal points +Y
+        # Looking from +Y: x decreases left-to-right, z increases bottom-to-top
+        # CCW from outside: bottom-right -> top-right -> bottom-left
+        triangles[0::2, 0] = np.column_stack([a1, perp, zeros])    # bottom-left (from outside)
+        triangles[0::2, 1] = np.column_stack([a1, perp, z1])       # top-left
+        triangles[0::2, 2] = np.column_stack([a0, perp, zeros])    # bottom-right
+        triangles[1::2, 0] = np.column_stack([a0, perp, zeros])    # bottom-right
+        triangles[1::2, 1] = np.column_stack([a1, perp, z1])       # top-left
+        triangles[1::2, 2] = np.column_stack([a0, perp, z0])       # top-right
 
     elif wall_type == 'west':
-        # West wall (x = 0, varying y)
-        triangles[0::2, 0] = np.column_stack([np.zeros(n), axis_coords[idx], np.zeros(n)])
-        triangles[0::2, 1] = np.column_stack([np.zeros(n), axis_coords[idx + 1], np.zeros(n)])
-        triangles[0::2, 2] = np.column_stack([np.zeros(n), axis_coords[idx], terrain_edge[idx]])
-        triangles[1::2, 0] = np.column_stack([np.zeros(n), axis_coords[idx + 1], np.zeros(n)])
-        triangles[1::2, 1] = np.column_stack([np.zeros(n), axis_coords[idx + 1], terrain_edge[idx + 1]])
-        triangles[1::2, 2] = np.column_stack([np.zeros(n), axis_coords[idx], terrain_edge[idx]])
+        # West wall (x=0), normal points -X
+        # Looking from -X: y decreases left-to-right, z increases bottom-to-top
+        # CCW from outside: bottom-right -> top-right -> bottom-left
+        triangles[0::2, 0] = np.column_stack([zeros, a1, zeros])   # bottom-left (from outside)
+        triangles[0::2, 1] = np.column_stack([zeros, a1, z1])      # top-left
+        triangles[0::2, 2] = np.column_stack([zeros, a0, zeros])   # bottom-right
+        triangles[1::2, 0] = np.column_stack([zeros, a0, zeros])   # bottom-right
+        triangles[1::2, 1] = np.column_stack([zeros, a1, z1])      # top-left
+        triangles[1::2, 2] = np.column_stack([zeros, a0, z0])      # top-right
 
     elif wall_type == 'east':
-        # East wall (x = perp_coord, varying y)
-        triangles[0::2, 0] = np.column_stack([np.full(n, perp_coord), axis_coords[idx], np.zeros(n)])
-        triangles[0::2, 1] = np.column_stack([np.full(n, perp_coord), axis_coords[idx], terrain_edge[idx]])
-        triangles[0::2, 2] = np.column_stack([np.full(n, perp_coord), axis_coords[idx + 1], np.zeros(n)])
-        triangles[1::2, 0] = np.column_stack([np.full(n, perp_coord), axis_coords[idx + 1], np.zeros(n)])
-        triangles[1::2, 1] = np.column_stack([np.full(n, perp_coord), axis_coords[idx], terrain_edge[idx]])
-        triangles[1::2, 2] = np.column_stack([np.full(n, perp_coord), axis_coords[idx + 1], terrain_edge[idx + 1]])
+        # East wall (x=perp), normal points +X
+        # Looking from +X: y increases left-to-right, z increases bottom-to-top
+        # CCW from outside: bottom-left -> top-left -> bottom-right
+        triangles[0::2, 0] = np.column_stack([perp, a0, zeros])    # bottom-left
+        triangles[0::2, 1] = np.column_stack([perp, a0, z0])       # top-left
+        triangles[0::2, 2] = np.column_stack([perp, a1, zeros])    # bottom-right
+        triangles[1::2, 0] = np.column_stack([perp, a1, zeros])    # bottom-right
+        triangles[1::2, 1] = np.column_stack([perp, a0, z0])       # top-left
+        triangles[1::2, 2] = np.column_stack([perp, a1, z1])       # top-right
 
     return triangles
 
@@ -464,7 +498,8 @@ def generate_tile_mesh(
     tile_size_mm: float,
     tile_radius_km: float,
     base_height: float,
-    exaggeration: float = 1.0
+    exaggeration: float = 1.0,
+    global_min_elev: float = None
 ) -> tuple[mesh.Mesh, float, float]:
     """Generate a 3D mesh for a single terrain tile.
 
@@ -477,6 +512,7 @@ def generate_tile_mesh(
         tile_radius_km: Tile radius in kilometers (half the tile width)
         base_height: Thickness of the base in millimeters
         exaggeration: Vertical exaggeration factor (1.0 = true scale)
+        global_min_elev: Global minimum elevation across all tiles (for alignment)
 
     Returns:
         Tuple of (stl_mesh, max_z, volume_ml) where max_z is max height in mm
@@ -493,8 +529,8 @@ def generate_tile_mesh(
     out_width = (width - 1) * xy_scale
     out_height = (height - 1) * xy_scale
 
-    # Calculate terrain Z values
-    min_elev = np.nanmin(elevation)
+    # Calculate terrain Z values using global min for tile alignment
+    min_elev = global_min_elev if global_min_elev is not None else np.nanmin(elevation)
     terrain_z = base_height + (elevation - min_elev) * vertical_scale
     max_z = np.nanmax(terrain_z)
     terrain_z = np.nan_to_num(terrain_z, nan=base_height)
@@ -557,25 +593,24 @@ def process_single_tile(args: TileProcessArgs) -> TileResult:
         tile_size_mm=args.tile_size_mm,
         tile_radius_km=args.tile_radius_km,
         base_height=args.base_height,
-        exaggeration=args.exaggeration
+        exaggeration=args.exaggeration,
+        global_min_elev=args.global_min_elev
     )
 
     ext = "3mf" if args.output_format == "3mf" else "stl"
     filename = f"tile_{args.tx}_{args.ty}.{ext}"
     filepath = os.path.join(args.output_dir, filename)
 
-    if args.output_format == "3mf":
-        # Save as STL first, then convert to 3MF
-        temp_path = filepath.replace(".3mf", "_temp.stl")
-        try:
-            stl_mesh.save(temp_path)
-            tmesh = trimesh.load(temp_path)
-            tmesh.export(filepath)
-        finally:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-    else:
-        stl_mesh.save(filepath)
+    # Save to temp STL, load with trimesh to fix normals, then export
+    temp_path = os.path.join(args.output_dir, f"_temp_{args.tx}_{args.ty}.stl")
+    try:
+        stl_mesh.save(temp_path)
+        tmesh = trimesh.load(temp_path, force='mesh')
+        trimesh.repair.fix_normals(tmesh)
+        tmesh.export(filepath)
+    finally:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
 
     size_mb = os.path.getsize(filepath) / 1024 / 1024
     return TileResult(filename=filename, size_mb=size_mb, max_z=max_z, volume_ml=volume_ml)
@@ -785,7 +820,8 @@ def generate_meshes(
             tile_elev = tile_elevations[(tx, ty)]
             tile_tasks.append((
                 tx, ty, tile_elev, args.tile_size, tile_radius,
-                args.base, args.exaggeration, args.output, args.format
+                args.base, args.exaggeration, args.output, args.format,
+                global_min  # Pass global min for tile alignment
             ))
 
     print(f"\nGenerating {len(tile_tasks)} tiles...")
@@ -824,8 +860,8 @@ def print_summary(tiles_x: int, tiles_y: int, output_dir: str, total_volume_ml: 
     """
     print(f"\nDone! {tiles_x * tiles_y} tiles saved to {output_dir}")
     print(f"Total resin: {total_volume_ml:.1f}ml")
-    print(f"\nPrint layout (bottom-left origin):")
-    for ty in range(tiles_y - 1, -1, -1):
+    print(f"\nTile layout (0,0 = top-left):")
+    for ty in range(tiles_y):
         row = " ".join([f"[{tx},{ty}]" for tx in range(tiles_x)])
         print(f"  {row}")
 
