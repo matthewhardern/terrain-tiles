@@ -620,7 +620,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument('--base', type=float, default=2.0, help='Base thickness mm')
     parser.add_argument('--resolution', type=int, default=1000, help='Grid resolution per tile')
     parser.add_argument('--smooth', type=float, default=0.5, help='Smoothing (0=none)')
-    parser.add_argument('--output', type=str, default='tiles/', help='Output folder')
+    parser.add_argument('--output', type=str, default='dist/', help='Output folder')
     parser.add_argument(
         '--format', type=str, choices=['stl', '3mf'], default='stl',
         help='Output format (3mf is smaller)'

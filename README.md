@@ -38,7 +38,7 @@ python terrain_tiles.py --lat 52.3139 --lon -2.5947 \
 | `--exaggeration` | 2.0 | Vertical scale multiplier |
 | `--base` | 2.0 | Base thickness in mm |
 | `--smooth` | 0.5 | Gaussian smoothing sigma |
-| `--output` | tiles/ | Output folder |
+| `--output` | dist/ | Output folder |
 | `--format` | stl | Output format: `stl` or `3mf` |
 | `--no-cache` | false | Disable LIDAR data caching |
 | `--parallel` | 0 | Parallel workers for mesh generation |
@@ -46,10 +46,10 @@ python terrain_tiles.py --lat 52.3139 --lon -2.5947 \
 
 ## Output
 
-Creates numbered tile files with assembly layout:
+Creates numbered tile files in `dist/` (gitignored):
 
 ```
-tiles/
+dist/
   tile_0_0.stl  (bottom-left)
   tile_1_0.stl  (bottom-right)
   tile_0_1.stl  (top-left)

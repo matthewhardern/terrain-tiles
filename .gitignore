@@ -8,14 +8,10 @@ venv/
 env/
 .venv/
 *.egg-info/
-dist/
 build/
 
-# Output files
-*.stl
-*.3mf
-tiles/
-test_*/
+# Output tiles
+dist/
 
 # IDE
 .idea/
